@@ -651,6 +651,17 @@ The options for each server added to a backend.
     '''))
 
         self.add_template(
+            ConfigTemplate(name='BACKEND_LINKERD_PROXY_GLUE',
+                           value='''\
+  http-request set-header l5d-marathon-host {service_name}
+  server linkerd 127.0.0.1:4140
+''',
+                           overridable=True,
+                           description='''\
+The option to enable proxying requests to a local linkerd instance
+    '''))
+
+        self.add_template(
             ConfigTemplate(name='BACKEND_SERVER_HTTP_HEALTHCHECK_OPTIONS',
                            value='''\
   check inter {healthCheckIntervalSeconds}s fall {healthCheckFalls}\
@@ -1047,6 +1058,9 @@ Specified as {specifiedAs}.
         if 'HAPROXY_{0}_BACKEND_SERVER_OPTIONS' in app.labels:
             return app.labels['HAPROXY_{0}_BACKEND_SERVER_OPTIONS']
         return self.t['BACKEND_SERVER_OPTIONS'].value
+
+    def haproxy_backend_linkerd_proxy_glue(self, app):
+        return self.t['BACKEND_LINKERD_PROXY_GLUE'].value
 
     def haproxy_http_backend_proxypass_glue(self, app):
         if 'HAPROXY_{0}_HTTP_BACKEND_PROXYPASS_GLUE' in app.labels:
@@ -1563,6 +1577,9 @@ labels.append(Label(name='BACKEND_STICKY_OPTIONS',
                     func=set_label,
                     description=''))
 labels.append(Label(name='BACKEND_SERVER_OPTIONS',
+                    func=set_label,
+                    description=''))
+labels.append(Label(name="BACKEND_LINKERD_PROXY_GLUE",
                     func=set_label,
                     description=''))
 labels.append(Label(name='BACKEND_SERVER_TCP_HEALTHCHECK_OPTIONS',

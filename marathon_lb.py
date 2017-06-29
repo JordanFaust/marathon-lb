@@ -328,7 +328,7 @@ def _get_health_check_options(template, health_check, health_check_port):
 
 def config(apps, groups, bind_http_https, ssl_certs, templater,
            haproxy_map=False, domain_map_array=[], app_map_array=[],
-           config_file="/etc/haproxy/haproxy.cfg"):
+           config_file="/etc/haproxy/haproxy.cfg", linkerd_proxy=False):
     logger.info("generating config")
     config = templater.haproxy_head
     groups = frozenset(groups)
@@ -375,9 +375,16 @@ def config(apps, groups, bind_http_https, ssl_certs, templater,
             continue
 
         backend = app.appId[1:].replace('/', '_') + '_' + str(app.servicePort)
+        service_name = None
+
+        if linkerd_proxy:
+            domain_list = app.appId[1:].split('/')[::-1]
+            service_name = '.'.join(domain_list)
 
         logger.debug("frontend at %s:%d with backend %s",
                      app.bindAddr, app.servicePort, backend)
+        logger.warn("app with id %s now using service name %s",
+                     app.appId[1:], service_name)
 
         # If app has HAPROXY_{n}_MODE set, use that setting.
         # Otherwise use 'http' if HAPROXY_{N}_VHOST is set, and 'tcp' if not.
@@ -463,6 +470,12 @@ def config(apps, groups, bind_http_https, ssl_certs, templater,
             if app.useHsts:
                 backends += templater.haproxy_backend_hsts_options(app)
             backends += templater.haproxy_backend_http_options(app)
+
+            if linkerd_proxy:
+                backends += templater.haproxy_backend_linkerd_proxy_glue(app).format(
+                    service_name=service_name
+                )
+
             backend_http_backend_proxypass = templater \
                 .haproxy_http_backend_proxypass_glue(app)
             if app.proxypath:
@@ -575,17 +588,21 @@ def config(apps, groups, bind_http_https, ssl_certs, templater,
                         health_check_port)
             backend_server_options = templater \
                 .haproxy_backend_server_options(app)
-            backends += backend_server_options.format(
-                host=backendServer.host,
-                host_ipv4=backendServer.ip,
-                port=backendServer.port,
-                serverName=serverName,
-                cookieOptions=' check cookie ' +
-                shortHashedServerName if app.sticky else '',
-                healthCheckOptions=server_health_check_options
-                if server_health_check_options else '',
-                otherOptions=' disabled' if backendServer.draining else ''
-            )
+
+            if linkerd_proxy:
+                pass
+            else:
+                backends += backend_server_options.format(
+                    host=backendServer.host,
+                    host_ipv4=backendServer.ip,
+                    port=backendServer.port,
+                    serverName=serverName,
+                    cookieOptions=' check cookie ' +
+                    shortHashedServerName if app.sticky else '',
+                    healthCheckOptions=server_health_check_options
+                    if server_health_check_options else '',
+                    otherOptions=' disabled' if backendServer.draining else ''
+                )
 
     http_frontend_list.sort(key=lambda x: x[0], reverse=True)
     https_frontend_list.sort(key=lambda x: x[0], reverse=True)
@@ -1436,13 +1453,13 @@ def get_apps(marathon):
 
 
 def regenerate_config(apps, config_file, groups, bind_http_https,
-                      ssl_certs, templater, haproxy_map):
+                      ssl_certs, templater, haproxy_map, linkerd_proxy):
     domain_map_array = []
     app_map_array = []
 
     generated_config = config(apps, groups, bind_http_https, ssl_certs,
                               templater, haproxy_map, domain_map_array,
-                              app_map_array, config_file)
+                              app_map_array, config_file, linkerd_proxy)
 
     compareWriteAndReloadConfig(generated_config, config_file,
                                 domain_map_array, app_map_array, haproxy_map)
@@ -1451,7 +1468,7 @@ def regenerate_config(apps, config_file, groups, bind_http_https,
 class MarathonEventProcessor(object):
 
     def __init__(self, marathon, config_file, groups,
-                 bind_http_https, ssl_certs, haproxy_map):
+                 bind_http_https, ssl_certs, haproxy_map, linkerd_proxy):
         self.__marathon = marathon
         # appId -> MarathonApp
         self.__apps = dict()
@@ -1465,6 +1482,7 @@ class MarathonEventProcessor(object):
         self.__pending_reset = False
         self.__pending_reload = False
         self.__haproxy_map = haproxy_map
+        self.__linkerd_proxy = linkerd_proxy
 
         # Fetch the base data
         self.reset_from_tasks()
@@ -1517,7 +1535,8 @@ class MarathonEventProcessor(object):
                               self.__bind_http_https,
                               self.__ssl_certs,
                               self.__templater,
-                              self.__haproxy_map)
+                              self.__haproxy_map,
+                              self.__linkerd_proxy)
 
             logger.debug("updating tasks finished, took %s seconds",
                          time.time() - start_time)
@@ -1642,6 +1661,9 @@ def get_arg_parser():
                         help="Maximum port number to use when auto-assigning "
                              "service ports for IP-per-task applications",
                         type=int, default=10100)
+    parser.add_argument("--linkerd-proxy",
+                        help="Enable proxying all requests to a local linkerd instance",
+                        action="store_true")
     parser = set_logging_args(parser)
     parser = set_marathon_auth_args(parser)
     return parser
@@ -1739,7 +1761,8 @@ if __name__ == '__main__':
                                            args.group,
                                            not args.dont_bind_http_https,
                                            args.ssl_certs,
-                                           args.haproxy_map)
+                                           args.haproxy_map,
+                                           args.linkerd_proxy)
         signal.signal(signal.SIGHUP, processor.handle_signal)
         signal.signal(signal.SIGUSR1, processor.handle_signal)
         backoff = 3
@@ -1765,4 +1788,5 @@ if __name__ == '__main__':
                           not args.dont_bind_http_https,
                           args.ssl_certs,
                           ConfigTemplater(),
-                          args.haproxy_map)
+                          args.haproxy_map,
+                          args.linkerd_proxy)
